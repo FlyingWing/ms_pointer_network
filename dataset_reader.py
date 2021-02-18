@@ -24,8 +24,8 @@ class MSDatasetReader(DatasetReader):
         query = re.sub('/','',query)
         strinfo = re.compile('[\u4e00-\u9fa5]{1,}')
         # s1 = strinfo.sub(" ", '17哈弗H6豪华')
-        s1 = list(map(lambda x:x.strip(),strinfo.split(query)))
-        s2 = list(map(lambda x:x.strip(), strinfo.findall(query)))
+        s1 = strinfo.split(query)
+        s2 = strinfo.findall(query)
         #print(s1)
         #print(s2)
 
@@ -35,7 +35,7 @@ class MSDatasetReader(DatasetReader):
             if e1=='':
                 tokens += [w for w in e2]
             else:
-                tokens += [e1]
+                tokens += [e1.strip()]
                 tokens += [w for w in e2]
 
         if len(s1) > len(s2) and s1[-1] != '':
