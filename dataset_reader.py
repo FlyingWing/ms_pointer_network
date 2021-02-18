@@ -20,7 +20,7 @@ class MSDatasetReader(DatasetReader):
         self._source2_token_indexers = {"tokens": SingleIdTokenIndexer(namespace=namespace)}
         self._target_token_indexers = {"tokens": SingleIdTokenIndexer(namespace=namespace)}
 
-    def seg_split(query):
+    def seg_split(self, query):
         strinfo = re.compile('[\u4e00-\u9fa5]{1,}')
         # s1 = strinfo.sub(" ", '17哈弗H6豪华')
         s1 = strinfo.split(query)
@@ -56,11 +56,11 @@ class MSDatasetReader(DatasetReader):
             #src1, src2, tgt = src1.strip(), src2.strip(), tgt.strip()
 
             tokens = line.split("\t\t")
-            if len(tokens) != 5:
+            if len(tokens) != 4:
                 continue
-            src1 = ' '.join(seg_split(tokens[0]))
-            src2 = ' '.join(seg_split(tokens[2])) + ' ' + ' '.join(seg_split(tokens[3]))
-            tgt = ' '.join(seg_split(tokens[1]))
+            src1 = ' '.join(self.seg_split(tokens[0]))
+            src2 = ' '.join(self.seg_split(tokens[2])) + ' ' + ' '.join(self.seg_split(tokens[3]))
+            tgt = ' '.join(self.seg_split(tokens[1]))
             
             if not src1 or not src2 or not tgt:
                 continue
@@ -92,7 +92,7 @@ class MSDatasetReader(DatasetReader):
             # 对target分词、添加START、END
             assert all(any(tgt_token == src_token for src_token in source1.split(" ")) or
                        any(tgt_token == src_token for src_token in source2.split(" "))
-                       for tgt_token in target.split(" ")), "target词必须在两个source中出现"
+                       for tgt_token in target.split(" ")), f"target词必须在两个source中出现, {tgt_token}, {source1}, {source2}"
             target_tokens = [Token(token) for token in target.split(" ")]
             target_tokens.insert(0, Token(START_SYMBOL))
             target_tokens.append(Token(END_SYMBOL))
