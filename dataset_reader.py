@@ -1,3 +1,4 @@
+import re
 from typing import Dict, Optional, Iterable
 
 from overrides import overrides
@@ -19,6 +20,30 @@ class MSDatasetReader(DatasetReader):
         self._source2_token_indexers = {"tokens": SingleIdTokenIndexer(namespace=namespace)}
         self._target_token_indexers = {"tokens": SingleIdTokenIndexer(namespace=namespace)}
 
+    def seg_split(query):
+        strinfo = re.compile('[\u4e00-\u9fa5]{1,}')
+        # s1 = strinfo.sub(" ", '17哈弗H6豪华')
+        s1 = strinfo.split(query)
+        s2 = strinfo.findall(query)
+        #print(s1)
+        #print(s2)
+
+        tokens=[]
+        minlen = min(len(s1), len(s2))
+        for e1, e2 in zip(s1[:minlen], s2[:minlen]):
+            if e1=='':
+                tokens += [w for w in e2]
+            else:
+                tokens += [e1]
+                tokens += [w for w in e2]
+
+        if len(s1) > len(s2) and s1[-1] != '':
+            tokens.append(s1[-1])
+        elif len(s1) < len(s2):
+            tokens += [w for w in s2[-1]]
+            
+        return tokens
+
     @overrides
     def _read(self, file_path: str) -> Iterable[Instance]:
         with open(file_path, "r", encoding="utf-8") as f:
@@ -27,8 +52,16 @@ class MSDatasetReader(DatasetReader):
             line = line.strip()
             if not line:
                 continue
-            src1, src2, tgt = line.split("\t")
-            src1, src2, tgt = src1.strip(), src2.strip(), tgt.strip()
+            # src1, src2, tgt = line.split("\t")
+            #src1, src2, tgt = src1.strip(), src2.strip(), tgt.strip()
+
+            tokens = line.split("\t\t")
+            if len(tokens) != 5:
+                continue
+            src1 = ' '.join(seg_split(tokens[0]))
+            src2 = ' '.join(seg_split(tokens[2])) + ' ' + ' '.join(seg_split(tokens[3]))
+            tgt = ' '.join(seg_split(tokens[1]))
+            
             if not src1 or not src2 or not tgt:
                 continue
             yield self.text_to_instance(src1, src2, tgt)
