@@ -1,27 +1,31 @@
 import re
-from typing import Dict, Optional, Iterable
+from typing import Dict, Optional, Iterable, Union, List,Iterator
 
 from overrides import overrides
 from allennlp.common.util import START_SYMBOL, END_SYMBOL
 from allennlp.data.tokenizers import Token
-from allennlp.data.instance import Instance
-from allennlp.data.fields import TextField, MetadataField
-from allennlp.data.dataset_readers import DatasetReader
+# from allennlp.data.instance import Instance
+from allennlp.data.fields import TextField, MetadataField, LabelField
+from allennlp.data import DatasetReader, Instance
 from allennlp.data.token_indexers import TokenIndexer, SingleIdTokenIndexer
+
+from os import PathLike
+PathOrStr = Union[PathLike, str]
+DatasetReaderInput = Union[PathOrStr, List[PathOrStr], Dict[str, PathOrStr]]
 
 
 @DatasetReader.register("ms")
 class MSDatasetReader(DatasetReader):
-    def __init__(self,
-                 namespace: str = "tokens",
-                 lazy: bool = False) -> None:
-        super().__init__(lazy)
+    def __init__(self, namespace='tokens', **args) -> None:
+        super().__init__(**args)
         self._source1_token_indexers = {"tokens": SingleIdTokenIndexer(namespace=namespace)}
         self._source2_token_indexers = {"tokens": SingleIdTokenIndexer(namespace=namespace)}
-        self._target_token_indexers = {"tokens": SingleIdTokenIndexer(namespace=namespace)}
+        self._target_token_indexers  = {"tokens": SingleIdTokenIndexer(namespace=namespace)}
 
     def seg_split(self, query):
-        query = re.sub('/','',query)
+        #pattern = re.compile(r'/|【|】|\*|-|（|）|\(|\)|\[|\]|&|「|」|★|！|▲|x|%|\||｜|#')
+        pattern = re.compile(r'[^\.A-Za-z0-9\u4e00-\u9fa5]')
+        query = re.sub(pattern,' ',query)
         strinfo = re.compile('[\u4e00-\u9fa5]{1,}')
         # s1 = strinfo.sub(" ", '17哈弗H6豪华')
         s1 = strinfo.split(query)
@@ -35,15 +39,17 @@ class MSDatasetReader(DatasetReader):
             if e1=='':
                 tokens += [w for w in e2]
             else:
-                tokens += [e1.strip()]
+                if e1 != ' ':
+                    tokens  += e1.strip().split()
                 tokens += [w for w in e2]
 
         if len(s1) > len(s2) and s1[-1] != '':
-            tokens.append(s1[-1])
+            tokens+=s1[-1].strip().split()
         elif len(s1) < len(s2):
             tokens += [w for w in s2[-1]]
             
         return tokens
+
 
     @overrides
     def _read(self, file_path: str) -> Iterable[Instance]:
@@ -66,6 +72,7 @@ class MSDatasetReader(DatasetReader):
             if not src1 or not src2 or not tgt:
                 continue
             yield self.text_to_instance(src1, src2, tgt)
+
         
     @overrides
     def text_to_instance(self,
@@ -104,3 +111,4 @@ class MSDatasetReader(DatasetReader):
         
         fields_dict["metadata"] = MetadataField(meta_fields)
         return Instance(fields_dict)
+        

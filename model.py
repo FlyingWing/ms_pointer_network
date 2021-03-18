@@ -1,17 +1,18 @@
 from typing import Dict, List, Any, Tuple, Union
 
 import torch
+import torch.nn as nn
 import numpy
 from overrides import overrides
 from torch.nn.modules.rnn import LSTMCell
-
 from allennlp.common.util import START_SYMBOL, END_SYMBOL
-from allennlp.models.model import Model
-from allennlp.data.vocabulary import Vocabulary
-from allennlp.modules.text_field_embedders import TextFieldEmbedder
-from allennlp.modules.seq2seq_encoders import Seq2SeqEncoder
+
+from allennlp.data import Vocabulary
+from allennlp.models import Model
+from allennlp.modules import TextFieldEmbedder, Seq2SeqEncoder
+from allennlp.modules.token_embedders import Embedding
+
 from allennlp.modules.attention import AdditiveAttention
-from allennlp.modules import Embedding
 from allennlp.nn import util
 from allennlp.nn.beam_search import BeamSearch
 from allennlp.training.metrics import Metric, BLEU
@@ -47,6 +48,7 @@ class MSPointerNetwork(Model):
         self.decoder_output_dim = decoder_output_dim
 
         # TODO: AllenNLP实现的Addictive Attention可能没有bias
+        self.soft_max_func = nn.Softmax(dim=1)
         self._attention_1 = AdditiveAttention(self.decoder_output_dim, self.encoder_output_dim_1)
         self._attention_2 = AdditiveAttention(self.decoder_output_dim, self.encoder_output_dim_2)
 
@@ -109,8 +111,8 @@ class MSPointerNetwork(Model):
         return {
             "source_mask_1": source_mask_1,
             "source_mask_2": source_mask_2,
-            "source_token_ids_1": source_tokens_1["tokens"],
-            "source_token_ids_2": source_tokens_2["tokens"],
+            "source_token_ids_1": source_tokens_1["tokens"]['tokens'],
+            "source_token_ids_2": source_tokens_2["tokens"]['tokens'],
             "encoder_out_1": encoder_out_1,
             "encoder_out_2": encoder_out_2,
         }
@@ -125,7 +127,7 @@ class MSPointerNetwork(Model):
         batch_size = state["encoder_out_1"].size()[0]
 
         # 根据每个batch的mask情况，获取最终rnn隐层状态
-        # shape: (batch_size, encoder_output_dim_1)
+        # shape: (batch_size, encoder_output_dim_1), 获取序列最后一个向量
         encoder_final_output_1 = util.get_final_encoder_states(
                 state["encoder_out_1"],
                 state["source_mask_1"],
@@ -155,11 +157,14 @@ class MSPointerNetwork(Model):
 
         # 1. 训练时：必然同时提供了target_tokens作为ground truth。
         #    此时，只需要计算loss，无需beam search
+
+        self._source_encoder_1._module.flatten_parameters()
+        self._source_encoder_2._module.flatten_parameters()
         if self.training:
             assert target_tokens is not None
             
             state = self._encode(source_tokens_1, source_tokens_2)
-            state["target_token_ids"] = target_tokens["tokens"]
+            state["target_token_ids"] = target_tokens["tokens"]['tokens']
             state = self._init_decoder_state(state)
             output_dict = self._forward_loss(target_tokens, state)
             output_dict["metadata"] = metadata
@@ -171,7 +176,7 @@ class MSPointerNetwork(Model):
             
             # 计算loss
             state = self._encode(source_tokens_1, source_tokens_2)
-            state["target_token_ids"] = target_tokens["tokens"]
+            state["target_token_ids"] = target_tokens["tokens"]['tokens']
             state = self._init_decoder_state(state)
             output_dict = self._forward_loss(target_tokens, state)
             
@@ -187,7 +192,7 @@ class MSPointerNetwork(Model):
                 # shape: (batch_size, max_decoding_steps)
                 best_predictions = top_k_predictions[:, 0, :]
                 # shape: (batch_size, target_seq_len)
-                gold_tokens = target_tokens["tokens"]
+                gold_tokens = target_tokens["tokens"]['tokens']
                 self._tensor_based_metric(best_predictions, gold_tokens)
             output_dict["metadata"] = metadata
             return output_dict  # 包含loss、metadata、top-k、top-k log prob四项
@@ -208,7 +213,7 @@ class MSPointerNetwork(Model):
         """
         为输入的一个batch计算损失（仅在训练时调用）。
         """
-        batch_size, target_seq_len = target_tokens["tokens"].size()
+        batch_size, target_seq_len = target_tokens["tokens"]['tokens'].size()
 
         # shape: (batch_size, seq_max_len_1)
         source_mask_1 = state["source_mask_1"]
@@ -222,7 +227,7 @@ class MSPointerNetwork(Model):
         for timestep in range(num_decoding_steps):  # t: 0..T
 
             # 当前时刻要输入的token id，shape (batch_size,)
-            input_choices = target_tokens["tokens"][:, timestep]
+            input_choices = target_tokens["tokens"]['tokens'][:, timestep]
 
             # 更新一步解码器状态（计算各类中间变量，例如attention分数、软门控分数）
             state = self._decoder_step(input_choices, state)
@@ -235,7 +240,8 @@ class MSPointerNetwork(Model):
 
             # 计算target_to_source，指明当前要输出的target (ground truth)，是否出现在source之中
             # shape: (batch_size, seq_max_len_1)
-            target_to_source_1 = (state["source_token_ids_1"] == 
+
+            target_to_source_1 = (state["source_token_ids_1"]== 
                     state["target_token_ids"][:, timestep+1].unsqueeze(-1))
             # shape: (batch_size, seq_max_len_2)
             target_to_source_2 = (state["source_token_ids_2"] ==
@@ -285,12 +291,13 @@ class MSPointerNetwork(Model):
         # y_{t-1}, shape: (group_size, target_embedding_dim)
         embedded_input = self._target_embedder(last_predictions)
 
+
         # a_t, shape: (group_size, seq_max_len_1)
-        state["attentive_weights_1"] = self._attention_1(
-                state["decoder_hidden"], state["encoder_out_1"], source_mask_1)
+        state["attentive_weights_1"] = self.soft_max_func(self._attention_1(
+                state["decoder_hidden"], state["encoder_out_1"], source_mask_1))
         # a'_t, shape: (group_size, seq_max_len_2)
-        state["attentive_weights_2"] = self._attention_2(
-                state["decoder_hidden"], state["encoder_out_2"], source_mask_2)
+        state["attentive_weights_2"] = self.soft_max_func(self._attention_2(
+                state["decoder_hidden"], state["encoder_out_2"], source_mask_2))
 
         # c_t, shape: (group_size, encoder_output_dim_1)
         attentive_read_1 = util.weighted_sum(state["encoder_out_1"], state["attentive_weights_1"])
@@ -303,6 +310,8 @@ class MSPointerNetwork(Model):
                 state["decoder_hidden"]), dim=-1)
         # shape: (group_size,)
         gate_projected = self._gate_projection_layer(gate_input).squeeze(-1)
+
+
         # shape: (group_size,)
         state["gate_score"] = torch.sigmoid(gate_projected)
 
@@ -351,32 +360,48 @@ class MSPointerNetwork(Model):
         """
         # 计算第一个source的分值
         # shape: (batch_size, seq_max_len_1)
-        combined_log_probs_1 = (copy_scores_1 + 1e-45).log() + (target_to_source_1.float()
-                + 1e-45).log() + (source_mask_1.float() + 1e-45).log()
+        # combined_log_probs_1 = (copy_scores_1 + 1e-45).log() + (target_to_source_1.float()
+                # + 1e-45).log() + (source_mask_1.float() + 1e-45).log()
         # shape: (batch_size,)
-        log_probs_1 = util.logsumexp(combined_log_probs_1)  # log(exp(a[0]) + ... + exp(a[L]))
+        # log_probs_1 = util.logsumexp(combined_log_probs_1)  # log(exp(a[0]) + ... + exp(a[L]))
+
+        log_probs_1 =  (copy_scores_1 * target_to_source_1).sum(axis=1)    
 
         # 计算第二个source的分值
         # shape: (batch_size, seq_max_len_2)
-        combined_log_probs_2 = (copy_scores_2 + 1e-45).log() + (target_to_source_2.float()
-                + 1e-45).log() + (source_mask_2.float() + 1e-45).log()
+        #combined_log_probs_2 = (copy_scores_2 + 1e-45).log() + (target_to_source_2.float()
+        #       + 1e-45).log() + (source_mask_2.float() + 1e-45).log()
         # shape: (batch_size,)
-        log_probs_2 = util.logsumexp(combined_log_probs_2)  # log(exp(a[0]) + ... + exp(a[L]))
+        #log_probs_2 = util.logsumexp(combined_log_probs_2)  # log(exp(a[0]) + ... + exp(a[L]))
+
+        log_probs_2 = (copy_scores_2 * target_to_source_2).sum(axis=1)
 
         # 计算 log(p1 * gate + p2 * (1-gate))
-        log_gate_score_1 = gate_score.log()  # shape: (batch_size,)
-        log_gate_score_2 = (1 - gate_score).log()  # shape: (batch_size,)
-        item_1 = (log_gate_score_1 + log_probs_1).unsqueeze(-1)  # shape: (batch_size, 1)
-        item_2 = (log_gate_score_2 + log_probs_2).unsqueeze(-1)  # shape: (batch_size, 1)
-        step_log_likelihood = util.logsumexp(torch.cat((item_1, item_2), -1))  # shape: (batch_size,)
+        # log_gate_score_1 = gate_score.log()  # shape: (batch_size,)
+        # log_gate_score_2 = (1 - gate_score).log()  # shape: (batch_size,)
+        # item_1 = (log_gate_score_1 + log_probs_1).unsqueeze(-1)  # shape: (batch_size, 1)
+        # item_2 = (log_gate_score_2 + log_probs_2).unsqueeze(-1)  # shape: (batch_size, 1)
+        # step_log_likelihood = util.logsumexp(torch.cat((item_1, item_2), -1))  # shape: (batch_size,)
+
+
+        step_log_likelihood = torch.log((log_probs_1 * gate_score) + log_probs_2 * (1-gate_score))
+
+        # 处理可能出现的空值 
+        #step_log_likelihood = torch.where(torch.isnan(step_log_likelihood), torch.full_like(step_log_likelihood, 1e-45), step_log_likelihood)
+
+        # 处理可能出现的无穷大
+        #step_log_likelihood = torch.where(torch.isfinite(step_log_likelihood), torch.full_like(step_log_likelihood, 1e-45), step_log_likelihood)
+        
         return step_log_likelihood
 
     def _forward_beam_search(self,
                              state: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         batch_size = state["source_mask_1"].size()[0]
-        start_predictions = state["source_mask_1"].new_full((batch_size,), fill_value=self._start_index)
+        start_predictions = state["source_mask_1"].long().new_full((batch_size,), fill_value=self._start_index)
+
         all_top_k_predictions, log_probabilities = self._beam_search.search(
                 start_predictions, state, self.take_search_step)
+
         return {
             "predicted_log_probs": log_probabilities,
             "predictions": all_top_k_predictions
@@ -470,6 +495,7 @@ class MSPointerNetwork(Model):
         final_log_probs = (state["decoder_hidden"].new_zeros((group_size,
                 self._target_vocab_size)) + 1e-45).log()
 
+
         for i in range(seq_max_len_1):  # 遍历source1的所有时间步
             # 当前时间步的预测概率，shape: (group_size, 1)
             log_probs_slice = log_probs_1[:, i].unsqueeze(-1)
@@ -483,6 +509,7 @@ class MSPointerNetwork(Model):
                     log_probs_slice), dim=-1)).unsqueeze(-1)
             # 将combined_scores设置回final_log_probs中
             final_log_probs = final_log_probs.scatter(-1, source_to_target_slice, combined_scores)
+
         
         # 对source2也同样做一遍
         for i in range(seq_max_len_2):
@@ -519,7 +546,7 @@ class MSPointerNetwork(Model):
                 predicted_tokens.append(batch_predicted_tokens)
         return predicted_tokens
 
-    @overrides
+    #@overrides
     def decode(self, output_dict: Dict[str, torch.Tensor]) -> Dict[str, Any]:
         """
         将预测结果（tensor）解码成token序列。
