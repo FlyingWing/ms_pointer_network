@@ -158,6 +158,9 @@ class MSPointerNetwork(Model):
         # 1. 训练时：必然同时提供了target_tokens作为ground truth。
         #    此时，只需要计算loss，无需beam search
 
+        source_tokens_1['tokens']['tokens'] = torch.cat([source_tokens_1['tokens']['tokens'], torch.zeros(source_tokens_1['tokens']['tokens'].shape[0]).int().unsqueeze(-1)],1)
+        source_tokens_2['tokens']['tokens'] = torch.cat([source_tokens_2['tokens']['tokens'], torch.zeros(source_tokens_2['tokens']['tokens'].shape[0]).int().unsqueeze(-1)],1)
+
         self._source_encoder_1._module.flatten_parameters()
         self._source_encoder_2._module.flatten_parameters()
         if self.training:
@@ -385,6 +388,7 @@ class MSPointerNetwork(Model):
 
 
         step_log_likelihood = torch.log((log_probs_1 * gate_score) + log_probs_2 * (1-gate_score))
+
 
         # 处理可能出现的空值 
         #step_log_likelihood = torch.where(torch.isnan(step_log_likelihood), torch.full_like(step_log_likelihood, 1e-45), step_log_likelihood)
